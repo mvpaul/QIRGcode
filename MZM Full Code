@@ -1,0 +1,248 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.special import jv
+from scipy.optimize import minimize, differential_evolution
+import scipy.fft as fft
+
+class CompleteMZMAnalyzer:
+    """
+    Complete MZM Analysis with both discrete spectrum analysis and optimization
+    This combines all functionality in a single, self-contained class.
+    """
+    
+    def __init__(self, fm=1e9, duration_cycles=16):
+        """Initialize the complete analyzer"""
+        self.fm = fm
+        self.omega_m = 2 * np.pi * fm
+        
+        # Ensure exact number of cycles for discrete spectrum
+        self.duration = duration_cycles / fm
+        self.fs = 64 * fm  # 64× oversampling
+        self.num_samples = int(duration_cycles * self.fs / fm)
+        self.duration = self.num_samples / self.fs
+        self.t = np.linspace(0, self.duration, self.num_samples, endpoint=False)
+        
+        print(f"=== Complete MZM Analyzer Initialized ===")
+        print(f"Fundamental frequency: {fm/1e9:.3f} GHz")
+        print(f"Duration: {self.duration*1e9:.1f} ns ({duration_cycles} cycles)")
+        print(f"Sampling: {self.fs/1e9:.1f} GHz ({self.num_samples} samples)")
+    
+    def generate_clean_signal(self, beta1, beta2, beta3, phi1, phi2, phi3):
+        """Generate clean modulated signal using Bessel expansion"""
+        max_order = 5
+        signal = np.zeros(len(self.t), dtype=complex)
+        
+        for n1 in range(-max_order, max_order + 1):
+            for n2 in range(-max_order, max_order + 1):
+                for n3 in range(-max_order, max_order + 1):
+                    freq_offset = n1 + 2*n2 + 3*n3
+                    
+                    if abs(freq_offset) <= 8:
+                        amplitude = jv(n1, beta1) * jv(n2, beta2) * jv(n3, beta3)
+                        
+                        if abs(amplitude) > 1e-6:
+                            phase = n1*phi1 + n2*phi2 + n3*phi3
+                            signal += amplitude * np.exp(1j * (freq_offset * self.omega_m * self.t + phase))
+        
+        return signal
+    
+    def mzm_interference(self, beta1, beta2, beta3, phi1, phi2, phi3, delta_phi):
+        """Calculate MZM interference"""
+        modulation = self.generate_clean_signal(beta1, beta2, beta3, phi1, phi2, phi3)
+        
+        upper_arm = 0.5 * modulation
+        lower_arm = 0.5 * modulation * np.exp(1j * delta_phi)
+        output = upper_arm + lower_arm
+        
+        return output, upper_arm, lower_arm
+    
+    def extract_sideband_powers(self, signal):
+        """Extract power in each sideband"""
+        fft_signal = fft.fft(signal)
+        frequencies = fft.fftfreq(self.num_samples, 1/self.fs)
+        
+        sideband_powers = {}
+        for order in range(-10, 11):
+            target_freq = order * self.fm
+            freq_idx = np.argmin(np.abs(frequencies - target_freq))
+            
+            if abs(frequencies[freq_idx] - target_freq) < self.fm / 100:
+                power = abs(fft_signal[freq_idx])**2
+                sideband_powers[order] = power
+        
+        return sideband_powers
+    
+    def plot_analysis(self, output, upper, lower):
+        """Create clean visualization"""
+        fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+        
+        # Time domain - show 4 cycles
+        cycles_to_show = 4
+        samples_to_show = int(cycles_to_show * self.fs / self.fm)
+        t_plot = self.t[:samples_to_show] * 1e9
+        
+        # Time plots
+        axes[0,0].plot(t_plot, np.real(upper[:samples_to_show]), 'b-', linewidth=2, label='Upper Real')
+        axes[0,0].plot(t_plot, np.real(lower[:samples_to_show]), 'r-', linewidth=2, label='Lower Real')
+        axes[0,0].set_title('MZM Arm Signals', fontweight='bold')
+        axes[0,0].set_xlabel('Time (ns)')
+        axes[0,0].set_ylabel('Amplitude')
+        axes[0,0].legend()
+        axes[0,0].grid(True, alpha=0.3)
+        
+        axes[0,1].plot(t_plot, np.real(output[:samples_to_show]), 'g-', linewidth=3, label='Output Real')
+        axes[0,1].plot(t_plot, np.abs(output[:samples_to_show]), 'g--', linewidth=2, alpha=0.7, label='Envelope')
+        axes[0,1].set_title('MZM Output Signal', fontweight='bold', color='green')
+        axes[0,1].set_xlabel('Time (ns)')
+        axes[0,1].set_ylabel('Amplitude')
+        axes[0,1].legend()
+        axes[0,1].grid(True, alpha=0.3)
+        
+        # Frequency domain
+        sideband_powers = self.extract_sideband_powers(output)
+        orders = list(sideband_powers.keys())
+        powers_linear = list(sideband_powers.values())
+        powers_db = [10*np.log10(p + 1e-12) for p in powers_linear]
+        
+        # Spectrum plot
+        colors = ['red' if o==0 else 'green' if o>0 else 'orange' for o in orders]
+        bars = axes[1,0].bar(orders, powers_db, color=colors, alpha=0.8, edgecolor='black')
+        axes[1,0].set_title('Sideband Power Spectrum', fontweight='bold')
+        axes[1,0].set_xlabel('Sideband Order (×fm)')
+        axes[1,0].set_ylabel('Power (dB)')
+        axes[1,0].grid(True, alpha=0.3, axis='y')
+        axes[1,0].axhline(y=-30, color='red', linestyle='--', label='30 dB threshold')
+        axes[1,0].legend()
+        
+        # Add value labels
+        for bar, power in zip(bars, powers_db):
+            height = bar.get_height()
+            if height > -50:  # Only label significant components
+                axes[1,0].text(bar.get_x() + bar.get_width()/2., height + 1,
+                              f'{power:.0f}', ha='center', va='bottom', fontsize=9)
+        
+        # Analysis summary
+        axes[1,1].axis('off')
+        axes[1,1].text(0.1, 0.9, 'Spectrum Analysis Summary', fontsize=14, fontweight='bold')
+        
+        # Key metrics
+        carrier_power = sideband_powers.get(0, 0)
+        pos_sideband_power = sum(sideband_powers.get(i, 0) for i in [1, 2, 3])
+        neg_sideband_power = sum(sideband_powers.get(i, 0) for i in [-1, -2, -3])
+        
+        y_pos = 0.7
+        metrics = [
+            f"Carrier power: {10*np.log10(carrier_power + 1e-12):.1f} dBc",
+            f"Positive sidebands: {10*np.log10(pos_sideband_power + 1e-12):.1f} dBc", 
+            f"Negative sidebands: {10*np.log10(neg_sideband_power + 1e-12):.1f} dBc",
+            f"Suppression ratio: {10*np.log10((pos_sideband_power + 1e-12)/(neg_sideband_power + 1e-12)):.1f} dB"
+        ]
+        
+        for metric in metrics:
+            axes[1,1].text(0.1, y_pos, metric, fontsize=12)
+            y_pos -= 0.1
+        
+        plt.tight_layout()
+        plt.show()
+        
+        return sideband_powers
+    
+    def optimize_for_sideband_suppression(self, target_sidebands, suppress_sidebands):
+        """Simple optimization for sideband suppression"""
+        
+        def objective(params):
+            beta1, beta2, beta3, phi1, phi2, phi3, delta_phi = params
+            
+            try:
+                output, _, _ = self.mzm_interference(beta1, beta2, beta3, phi1, phi2, phi3, delta_phi)
+                powers = self.extract_sideband_powers(output)
+                
+                # Enhancement objective (maximize target sidebands)
+                target_power = sum(powers.get(sb, 0) for sb in target_sidebands)
+                
+                # Suppression objective (minimize unwanted sidebands)
+                suppress_power = sum(powers.get(sb, 0) for sb in suppress_sidebands)
+                
+                # Combined objective (minimize suppression power, maximize target power)
+                objective_val = suppress_power / (target_power + 1e-12)
+                
+                return objective_val
+                
+            except:
+                return 1e6  # Large penalty for invalid parameters
+        
+        # Parameter bounds [beta1, beta2, beta3, phi1, phi2, phi3, delta_phi]
+        bounds = [(0.1, 2.0)]*3 + [(0, 2*np.pi)]*4
+        
+        print(f"Optimizing for sideband suppression...")
+        print(f"Target sidebands: {target_sidebands}")
+        print(f"Suppress sidebands: {suppress_sidebands}")
+        
+        # Use differential evolution for global optimization
+        result = differential_evolution(objective, bounds, maxiter=50, popsize=15, seed=42)
+        
+        print(f"Optimization complete!")
+        print(f"Success: {result.success}")
+        print(f"Objective value: {result.fun:.6f}")
+        
+        return result
+
+# Demonstration
+if __name__ == "__main__":
+    print("=== COMPLETE MZM ANALYSIS DEMONSTRATION ===\n")
+    
+    # Create analyzer
+    analyzer = CompleteMZMAnalyzer(fm=1e9, duration_cycles=16)
+    
+    # Initial parameters
+    beta1, beta2, beta3 = 1.2, 0.8, 0.5
+    phi1, phi2, phi3 = 0, np.pi/4, np.pi/2  
+    delta_phi = np.pi/6
+    
+    print(f"\nInitial parameters:")
+    print(f"β: ({beta1:.1f}, {beta2:.1f}, {beta3:.1f})")
+    print(f"φ: ({phi1*180/np.pi:.0f}°, {phi2*180/np.pi:.0f}°, {phi3*180/np.pi:.0f}°)")
+    print(f"Δφ: {delta_phi*180/np.pi:.0f}°")
+    
+    # Generate and analyze initial signal
+    print(f"\n=== Initial Analysis ===")
+    output, upper, lower = analyzer.mzm_interference(beta1, beta2, beta3, phi1, phi2, phi3, delta_phi)
+    initial_powers = analyzer.plot_analysis(output, upper, lower)
+    
+    # Optimization example
+    print(f"\n=== Optimization for Single Sideband ===")
+    target_sidebands = [0, 1, 2, 3]      # Keep positive sidebands
+    suppress_sidebands = [-1, -2, -3]    # Suppress negative sidebands
+    
+    result = analyzer.optimize_for_sideband_suppression(target_sidebands, suppress_sidebands)
+    
+    if result.success:
+        # Analyze optimized result
+        opt_params = result.x
+        beta1_opt, beta2_opt, beta3_opt, phi1_opt, phi2_opt, phi3_opt, delta_phi_opt = opt_params
+        
+        print(f"\nOptimized parameters:")
+        print(f"β: ({beta1_opt:.2f}, {beta2_opt:.2f}, {beta3_opt:.2f})")
+        print(f"φ: ({phi1_opt*180/np.pi:.0f}°, {phi2_opt*180/np.pi:.0f}°, {phi3_opt*180/np.pi:.0f}°)")
+        print(f"Δφ: {delta_phi_opt*180/np.pi:.0f}°")
+        
+        # Generate optimized signal
+        output_opt, upper_opt, lower_opt = analyzer.mzm_interference(*opt_params)
+        optimized_powers = analyzer.plot_analysis(output_opt, upper_opt, lower_opt)
+        
+        # Compare results
+        print(f"\n=== Optimization Results ===")
+        pos_initial = sum(initial_powers.get(i, 0) for i in [1, 2, 3])
+        neg_initial = sum(initial_powers.get(i, 0) for i in [-1, -2, -3])
+        
+        pos_opt = sum(optimized_powers.get(i, 0) for i in [1, 2, 3])
+        neg_opt = sum(optimized_powers.get(i, 0) for i in [-1, -2, -3])
+        
+        initial_ratio = 10*np.log10((pos_initial + 1e-12)/(neg_initial + 1e-12))
+        opt_ratio = 10*np.log10((pos_opt + 1e-12)/(neg_opt + 1e-12))
+        
+        print(f"Initial suppression ratio: {initial_ratio:.1f} dB")
+        print(f"Optimized suppression ratio: {opt_ratio:.1f} dB")
+        print(f"Improvement: {opt_ratio - initial_ratio:.1f} dB")
+    
+    print(f"\n=== COMPLETE ANALYSIS FINISHED ===")

@@ -1,0 +1,343 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.special import jv
+from scipy.signal import hilbert
+import scipy.fft as fft
+
+class MZMCleanBarAnalyzer:
+    """
+    Clean MZM Bar Visualization with Phase Labels
+    
+    Shows frequency components as clean bars with phase values written underneath.
+    Properly handles the distinction between real signals and complex modulated signals
+    for Hilbert transform analysis.
+    """
+    
+    def __init__(self, fm=1e9, duration_cycles=16):
+        """Initialize analyzer"""
+        self.fm = fm
+        self.omega_m = 2 * np.pi * fm
+        
+        self.duration = duration_cycles / fm
+        self.fs = 64 * fm
+        self.num_samples = int(duration_cycles * self.fs / fm)
+        self.duration = self.num_samples / self.fs
+        self.t = np.linspace(0, self.duration, self.num_samples, endpoint=False)
+        
+        print(f"=== MZM Clean Bar Analyzer ===")
+        print(f"Fundamental frequency: {fm/1e9:.3f} GHz")
+        print(f"Duration: {self.duration*1e9:.1f} ns ({duration_cycles} cycles)")
+        
+    def generate_modulated_signal(self, beta1, beta2, beta3, phi1, phi2, phi3):
+        """Generate clean modulated signal using Bessel expansion"""
+        max_order = 4
+        signal = np.zeros(len(self.t), dtype=complex)
+        
+        print(f"\nGenerating modulated signal:")
+        print(f"β = ({beta1:.2f}, {beta2:.2f}, {beta3:.2f})")
+        print(f"φ = ({phi1*180/np.pi:.0f}°, {phi2*180/np.pi:.0f}°, {phi3*180/np.pi:.0f}°)")
+        
+        for n1 in range(-max_order, max_order + 1):
+            for n2 in range(-max_order, max_order + 1):
+                for n3 in range(-max_order, max_order + 1):
+                    freq_offset = n1 + 2*n2 + 3*n3
+                    
+                    if abs(freq_offset) <= 8:
+                        amplitude = jv(n1, beta1) * jv(n2, beta2) * jv(n3, beta3)
+                        
+                        if abs(amplitude) > 1e-5:
+                            phase = n1*phi1 + n2*phi2 + n3*phi3
+                            signal += amplitude * np.exp(1j * (freq_offset * self.omega_m * self.t + phase))
+        
+        return signal
+    
+    def mzm_analysis_corrected(self, beta1, beta2, beta3, phi1, phi2, phi3, delta_phi):
+        """
+        Corrected MZM analysis that properly handles Hilbert transforms
+        """
+        print(f"\n=== Corrected MZM Analysis ===")
+        print(f"Interference phase: Δφ = {delta_phi*180/np.pi:.1f}°")
+        
+        # Generate complex modulated signals
+        modulation = self.generate_modulated_signal(beta1, beta2, beta3, phi1, phi2, phi3)
+        
+        # MZM interference (complex signals)
+        upper_arm_complex = 0.5 * modulation
+        lower_arm_complex = 0.5 * modulation * np.exp(1j * delta_phi)
+        output_complex = upper_arm_complex + lower_arm_complex
+        
+        # Extract real parts for proper Hilbert analysis
+        upper_real = np.real(upper_arm_complex)
+        lower_real = np.real(lower_arm_complex)
+        output_real = np.real(output_complex)
+        
+        print(f"\nSignal types for analysis:")
+        print(f"1. Original complex signals (full modulated)")
+        print(f"2. Real parts of complex signals")
+        print(f"3. Hilbert transform of real parts → analytical signals")
+        
+        # Hilbert transforms (applied to real signals)
+        upper_analytical = hilbert(upper_real)
+        lower_analytical = hilbert(lower_real)
+        output_analytical = hilbert(output_real)
+        
+        # FFTs of different signal types
+        frequencies = fft.fftfreq(self.num_samples, 1/self.fs)
+        
+        # 1. Original complex modulated signals
+        upper_fft_complex = fft.fft(upper_arm_complex)
+        output_fft_complex = fft.fft(output_complex)
+        
+        # 2. Real parts only
+        upper_fft_real = fft.fft(upper_real)
+        output_fft_real = fft.fft(output_real)
+        
+        # 3. Analytical signals (Hilbert of real parts)
+        upper_fft_analytical = fft.fft(upper_analytical)
+        output_fft_analytical = fft.fft(output_analytical)
+        
+        return {
+            'frequencies': frequencies,
+            'upper_arm_complex': upper_arm_complex,
+            'output_complex': output_complex,
+            'upper_real': upper_real,
+            'output_real': output_real,
+            'upper_analytical': upper_analytical,
+            'output_analytical': output_analytical,
+            'upper_fft_complex': upper_fft_complex,
+            'output_fft_complex': output_fft_complex,
+            'upper_fft_real': upper_fft_real,
+            'output_fft_real': output_fft_real,
+            'upper_fft_analytical': upper_fft_analytical,
+            'output_fft_analytical': output_fft_analytical
+        }
+    
+    def extract_frequency_components(self, fft_data, frequencies, freq_range=5):
+        """Extract amplitude and phase for each frequency component"""
+        components = {}
+        
+        for freq_order in range(-freq_range, freq_range + 1):
+            target_freq = freq_order * self.fm
+            freq_idx = np.argmin(np.abs(frequencies - target_freq))
+            
+            if abs(frequencies[freq_idx] - target_freq) < self.fm / 50:
+                complex_val = fft_data[freq_idx]
+                amplitude = abs(complex_val)
+                phase = np.angle(complex_val) * 180 / np.pi  # Convert to degrees
+                
+                if amplitude > 1e-6:
+                    components[freq_order] = {
+                        'amplitude': amplitude,
+                        'phase': phase,
+                        'complex': complex_val
+                    }
+        
+        return components
+    
+    def plot_clean_bars_with_phases(self, data):
+        """
+        Create clean bar plots with phase labels underneath
+        """
+        fig, axes = plt.subplots(3, 2, figsize=(20, 18))
+        fig.suptitle('MZM Frequency Analysis: Clean Bars with Phase Labels', 
+                     fontsize=16, fontweight='bold')
+        
+        # Extract frequency components for different signal types
+        freq_range = 5
+        
+        # Complex modulated signals (original)
+        output_complex_comp = self.extract_frequency_components(
+            data['output_fft_complex'], data['frequencies'], freq_range)
+        
+        # Real parts of complex signals
+        output_real_comp = self.extract_frequency_components(
+            data['output_fft_real'], data['frequencies'], freq_range)
+        
+        # Analytical signals (Hilbert of real parts)
+        output_analytical_comp = self.extract_frequency_components(
+            data['output_fft_analytical'], data['frequencies'], freq_range)
+        
+        # === Row 1: Original Complex Signal vs Its Real Part ===
+        self.plot_single_clean_bars(axes[0,0], output_complex_comp, 
+                                   'Original Complex Modulated Signal', 'blue')
+        
+        self.plot_single_clean_bars(axes[0,1], output_real_comp, 
+                                   'Real Part of Complex Signal', 'green')
+        
+        # === Row 2: Real Signal vs Its Hilbert Transform ===
+        self.plot_single_clean_bars(axes[1,0], output_real_comp, 
+                                   'Real Signal (Repeated for Comparison)', 'green')
+        
+        self.plot_single_clean_bars(axes[1,1], output_analytical_comp, 
+                                   'Hilbert Transform → Analytical Signal', 'red')
+        
+        # === Row 3: Side-by-side Comparisons ===
+        self.plot_comparison_bars(axes[2,0], 
+                                 [output_complex_comp, output_real_comp],
+                                 ['Complex Original', 'Real Part'],
+                                 ['blue', 'green'],
+                                 'Complex vs Real: Amplitude Comparison')
+        
+        self.plot_comparison_bars(axes[2,1], 
+                                 [output_real_comp, output_analytical_comp],
+                                 ['Real Signal', 'Analytical (Hilbert)'],
+                                 ['green', 'red'],
+                                 'Real vs Analytical: Amplitude Comparison')
+        
+        plt.tight_layout()
+        plt.show()
+        
+        return fig
+    
+    def plot_single_clean_bars(self, ax, components, title, color):
+        """
+        Plot clean bars with phase labels underneath
+        """
+        if not components:
+            ax.text(0.5, 0.5, 'No significant components', 
+                   ha='center', va='center', transform=ax.transAxes)
+            ax.set_title(title, fontweight='bold')
+            return
+        
+        freq_orders = sorted(components.keys())
+        amplitudes = [components[f]['amplitude'] for f in freq_orders]
+        phases = [components[f]['phase'] for f in freq_orders]
+        
+        # Create bar plot
+        x_pos = np.arange(len(freq_orders))
+        bars = ax.bar(x_pos, amplitudes, alpha=0.8, color=color, 
+                     edgecolor='black', linewidth=1)
+        
+        # Add amplitude labels on top of bars
+        max_amplitude = max(amplitudes)
+        for i, (bar, amp) in enumerate(zip(bars, amplitudes)):
+            if amp > max_amplitude * 0.01:  # Only label significant components
+                ax.text(bar.get_x() + bar.get_width()/2., amp + max_amplitude*0.02,
+                       f'{amp:.3f}', ha='center', va='bottom', 
+                       fontsize=10, fontweight='bold')
+        
+        # Add phase labels underneath bars
+        for i, (bar, phase) in enumerate(zip(bars, phases)):
+            ax.text(bar.get_x() + bar.get_width()/2., -max_amplitude*0.1,
+                   f'{phase:.0f}°', ha='center', va='top', 
+                   fontsize=10, fontweight='bold', color='purple')
+        
+        # Formatting
+        ax.set_title(title, fontsize=14, fontweight='bold')
+        ax.set_xlabel('Frequency Components', fontsize=12)
+        ax.set_ylabel('Amplitude', fontsize=12)
+        ax.set_xticks(x_pos)
+        ax.set_xticklabels([f'{f:+d}×fm' for f in freq_orders])
+        ax.grid(True, alpha=0.3, axis='y')
+        ax.set_ylim(bottom=-max_amplitude*0.2)  # Make room for phase labels
+        
+        # Add a note about phase labels
+        ax.text(0.02, 0.98, 'Purple numbers = Phase (degrees)', 
+               transform=ax.transAxes, fontsize=9, 
+               bbox=dict(boxstyle="round,pad=0.3", facecolor="lightyellow", alpha=0.8),
+               verticalalignment='top')
+    
+    def plot_comparison_bars(self, ax, components_list, labels, colors, title):
+        """
+        Plot side-by-side comparison bars
+        """
+        # Get all frequency orders
+        all_freq_orders = set()
+        for comp in components_list:
+            all_freq_orders.update(comp.keys())
+        freq_orders = sorted(all_freq_orders)
+        
+        if not freq_orders:
+            ax.text(0.5, 0.5, 'No components to compare', 
+                   ha='center', va='center', transform=ax.transAxes)
+            ax.set_title(title, fontweight='bold')
+            return
+        
+        # Prepare data
+        n_signals = len(components_list)
+        width = 0.8 / n_signals
+        x_pos = np.arange(len(freq_orders))
+        
+        # Plot bars for each signal type
+        for i, (comp, label, color) in enumerate(zip(components_list, labels, colors)):
+            amplitudes = []
+            phases = []
+            
+            for f in freq_orders:
+                if f in comp:
+                    amplitudes.append(comp[f]['amplitude'])
+                    phases.append(comp[f]['phase'])
+                else:
+                    amplitudes.append(0)
+                    phases.append(0)
+            
+            # Bar positions
+            bar_positions = x_pos + (i - n_signals/2 + 0.5) * width
+            
+            # Plot bars
+            bars = ax.bar(bar_positions, amplitudes, width, 
+                         alpha=0.8, color=color, edgecolor='black', 
+                         linewidth=1, label=label)
+            
+            # Add amplitude labels
+            max_amp = max(max(amplitudes), 1e-6)
+            for j, (pos, amp, phase) in enumerate(zip(bar_positions, amplitudes, phases)):
+                if amp > max_amp * 0.01:
+                    ax.text(pos, amp + max_amp*0.02, f'{amp:.3f}', 
+                           ha='center', va='bottom', fontsize=8, fontweight='bold')
+                    
+                    # Add phase labels (only for significant components)
+                    if abs(phase) > 1:
+                        ax.text(pos, -max_amp*0.05, f'{phase:.0f}°', 
+                               ha='center', va='top', fontsize=8, 
+                               color='purple', fontweight='bold')
+        
+        # Formatting
+        ax.set_title(title, fontsize=14, fontweight='bold')
+        ax.set_xlabel('Frequency Components', fontsize=12)
+        ax.set_ylabel('Amplitude', fontsize=12)
+        ax.set_xticks(x_pos)
+        ax.set_xticklabels([f'{f:+d}×fm' for f in freq_orders])
+        ax.legend()
+        ax.grid(True, alpha=0.3, axis='y')
+        
+        # Make room for phase labels
+        y_min, y_max = ax.get_ylim()
+        ax.set_ylim(bottom=y_min - (y_max - y_min)*0.15)
+
+# Demonstration with corrected analysis
+if __name__ == "__main__":
+    print("=== MZM CLEAN BAR ANALYSIS (CORRECTED) ===\n")
+    
+    # Create analyzer
+    analyzer = MZMCleanBarAnalyzer(fm=1e9, duration_cycles=16)
+    
+    # Parameters
+    beta1, beta2, beta3 = 1.0, 0.7, 0.4
+    phi1, phi2, phi3 = 0, np.pi/4, np.pi/2
+    delta_phi = np.pi/6
+    
+    print(f"Analysis Parameters:")
+    print(f"Modulation: β = ({beta1:.1f}, {beta2:.1f}, {beta3:.1f})")
+    print(f"Phases: φ = ({phi1*180/np.pi:.0f}°, {phi2*180/np.pi:.0f}°, {phi3*180/np.pi:.0f}°)")
+    print(f"Interference: Δφ = {delta_phi*180/np.pi:.0f}°")
+    
+    # Perform corrected analysis
+    data = analyzer.mzm_analysis_corrected(beta1, beta2, beta3, phi1, phi2, phi3, delta_phi)
+    
+    # Create clean bar visualization
+    print(f"\n=== Generating Clean Bar Plots ===")
+    fig = analyzer.plot_clean_bars_with_phases(data)
+    
+    print(f"\n=== KEY INSIGHTS (CORRECTED) ===")
+    print(f"1. COMPLEX MODULATED SIGNAL: Original has both +/- frequency sidebands")
+    print(f"2. REAL PART: Taking real part creates symmetric spectrum")
+    print(f"3. HILBERT TRANSFORM: Applied to real signal → analytical signal")
+    print(f"4. ANALYTICAL SIGNAL: Single-sideband (suppresses negative frequencies)")
+    print(f"5. PHASE LABELS: Purple numbers under bars show phase in degrees")
+    
+    print(f"\n=== HILBERT TRANSFORM CLARIFICATION ===")
+    print(f"- Complex signal → Real part → Hilbert → Analytical signal")
+    print(f"- This creates single-sideband from originally double-sideband")
+    print(f"- The Hilbert transform IS supposed to change the spectrum this way")
+    print(f"- It preserves positive frequencies, suppresses negative ones")
