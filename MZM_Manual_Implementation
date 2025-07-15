@@ -67,11 +67,13 @@ class MZMBesselAnalyzer:
 if __name__ == "__main__":
     print("\n=== Manual Six-Beta MZM Spectrum Explorer ===")
     analyzer = MZMBesselAnalyzer(fm=1e9, max_order=6)
-    # Manually input six betas and phases (edit these values to explore)
-    betas_upper = [float(input(f"Enter beta_upper_{i+1}: ")) for i in range(3)]
-    phis_upper = [float(input(f"Enter phi_upper_{i+1} (in radians): ")) for i in range(3)]
-    betas_lower = [float(input(f"Enter beta_lower_{i+1}: ")) for i in range(3)]
-    phis_lower = [float(input(f"Enter phi_lower_{i+1} (in radians): ")) for i in range(3)]
-    delta_phi = float(input("Enter delta_phi (in radians): "))
+    # === USER: Set phases here ===
+    phis_upper = [2.35619449, 3.4906585, 0.32345053]  # Change these to adjust upper arm phases
+    phis_lower = [0.91040133, 3.07532239, 2.35619449]  # Change these to adjust lower arm phases
+    delta_phi = 2.69056597 # Change this to adjust the relative phase between arms
+    # ============================
+    # Fixed betas from user
+    betas_upper = [0.5911418, 0.57029264, 0.43456265]
+    betas_lower = [0.45, 1.1, 0]
     upper, lower, combined = analyzer.mzm_spectra(betas_upper, phis_upper, betas_lower, phis_lower, delta_phi)
     analyzer.plot_spectra(upper, lower, combined)
