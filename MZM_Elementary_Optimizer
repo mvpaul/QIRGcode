@@ -1,0 +1,128 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.special import jv
+
+class MZMBesselAnalyzer:
+    """
+    MZM Frequency-Domain Analyzer using Bessel Expansion
+    Allows six independent betas (three per arm) and visualizes spectra.
+    """
+    def __init__(self, fm=1e9, max_order=6):
+        self.fm = fm
+        self.omega_m = 2 * np.pi * fm
+        self.max_order = max_order
+        self.freq_orders = np.arange(-10, 11)  # -10 to +10
+
+    def bessel_spectrum(self, betas, phis):
+        # betas, phis: arrays of length 3
+        spectrum = {}
+        for n1 in range(-self.max_order, self.max_order+1):
+            for n2 in range(-self.max_order, self.max_order+1):
+                for n3 in range(-self.max_order, self.max_order+1):
+                    order = n1 + 2*n2 + 3*n3
+                    if order in self.freq_orders:
+                        amp = jv(n1, betas[0]) * jv(n2, betas[1]) * jv(n3, betas[2])
+                        if abs(amp) > 1e-8:
+                            phase = n1*phis[0] + n2*phis[1] + n3*phis[2]
+                            val = amp * np.exp(1j*phase)
+                            if order in spectrum:
+                                spectrum[order] += val
+                            else:
+                                spectrum[order] = val
+        return spectrum
+
+    def mzm_spectra(self, betas_upper, phis_upper, betas_lower, phis_lower, delta_phi):
+        # Calculate spectra for each arm and combined output
+        upper = self.bessel_spectrum(betas_upper, phis_upper)
+        lower = self.bessel_spectrum(betas_lower, phis_lower)
+        # Lower arm gets extra phase delta_phi
+        lower = {k: v * np.exp(1j*delta_phi) for k, v in lower.items()}
+        # Combined output
+        combined = {k: upper.get(k,0) + lower.get(k,0) for k in self.freq_orders}
+        return upper, lower, combined
+
+    def get_amplitudes(self, combined):
+        # Returns a dict of {order: amplitude}
+        return {k: np.abs(v) for k, v in combined.items()}
+
+if __name__ == "__main__":
+    np.random.seed(42)
+    analyzer = MZMBesselAnalyzer(fm=1e9, max_order=6)
+    alpha = 2  # penalty weight for -1, -2, -3
+    beta = 1   # penalty weight for other unwanted sidebands
+    results = []
+    for i in range(20):
+        betas_upper = np.random.uniform(0.2, 1.5, 3)
+        phis_upper = np.random.uniform(0, 2*np.pi, 3)
+        betas_lower = np.random.uniform(0.2, 1.5, 3)
+        phis_lower = np.random.uniform(0, 2*np.pi, 3)
+        delta_phi = np.random.uniform(0, 2*np.pi)
+        _, _, combined = analyzer.mzm_spectra(
+            betas_upper, phis_upper, betas_lower, phis_lower, delta_phi)
+        amps = analyzer.get_amplitudes(combined)
+        carrier = amps.get(0, 0)
+        plus1 = amps.get(1, 0)
+        plus2 = amps.get(2, 0)
+        plus3 = amps.get(3, 0)
+        minus1 = amps.get(-1, 0)
+        minus2 = amps.get(-2, 0)
+        minus3 = amps.get(-3, 0)
+        # Unwanted: all sidebands except 0, +1, +2, +3, -1, -2, -3
+        other_unwanted = [amps.get(k, 0) for k in amps if k not in [0, 1, 2, 3, -1, -2, -3]]
+        sum_other_unwanted = sum(other_unwanted)
+        sum_minus = minus1 + minus2 + minus3
+        score = (plus1 + plus2 + plus3) - alpha * sum_minus - beta * sum_other_unwanted
+        results.append({
+            'index': i+1,
+            'betas_upper': betas_upper,
+            'phis_upper': phis_upper,
+            'betas_lower': betas_lower,
+            'phis_lower': phis_lower,
+            'delta_phi': delta_phi,
+            'carrier': carrier,
+            '+1': plus1,
+            '+2': plus2,
+            '+3': plus3,
+            '-1': minus1,
+            '-2': minus2,
+            '-3': minus3,
+            'sum_minus': sum_minus,
+            'sum_other_unwanted': sum_other_unwanted,
+            'score': score
+        })
+    print("\nResults for 20 Random Parameter Sets:")
+    for r in results:
+        print(f"Set {r['index']}:")
+        print(f"  betas_upper: {r['betas_upper']}")
+        print(f"  phis_upper: {r['phis_upper']}")
+        print(f"  betas_lower: {r['betas_lower']}")
+        print(f"  phis_lower: {r['phis_lower']}")
+        print(f"  delta_phi: {r['delta_phi']:.3f}")
+        print(f"  Carrier: {r['carrier']:.3f}")
+        print(f"  +1: {r['+1']:.3f}")
+        print(f"  +2: {r['+2']:.3f}")
+        print(f"  +3: {r['+3']:.3f}")
+        print(f"  -1: {r['-1']:.3f}")
+        print(f"  -2: {r['-2']:.3f}")
+        print(f"  -3: {r['-3']:.3f}")
+        print(f"  Sum of -1,-2,-3: {r['sum_minus']:.3f}")
+        print(f"  Sum of other unwanted sidebands: {r['sum_other_unwanted']:.3f}")
+        print(f"  Score: {r['score']:.3f}\n")
+    # Find the best set (highest score)
+    best = max(results, key=lambda r: r['score'])
+    print(f"Best set is Set {best['index']} (score = {best['score']:.3f})")
+    print(f"  betas_upper: {best['betas_upper']}")
+    print(f"  phis_upper: {best['phis_upper']}")
+    print(f"  betas_lower: {best['betas_lower']}")
+    print(f"  phis_lower: {best['phis_lower']}")
+    print(f"  delta_phi: {best['delta_phi']:.3f}")
+    print(f"  Carrier: {best['carrier']:.3f}")
+    print(f"  +1: {best['+1']:.3f}")
+    print(f"  +2: {best['+2']:.3f}")
+    print(f"  +3: {best['+3']:.3f}")
+    print(f"  -1: {best['-1']:.3f}")
+    print(f"  -2: {best['-2']:.3f}")
+    print(f"  -3: {best['-3']:.3f}")
+    print(f"  Sum of -1,-2,-3: {best['sum_minus']:.3f}")
+    print(f"  Sum of other unwanted sidebands: {best['sum_other_unwanted']:.3f}")
+    print(f"  Score: {best['score']:.3f}")

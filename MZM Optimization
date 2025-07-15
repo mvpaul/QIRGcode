@@ -1,381 +1,290 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.special import jv
-from scipy.optimize import minimize
-import scipy.fft as fft
 
-class MZMFocusedOptimizer:
+class MZMBesselAnalyzer:
     """
-    Focused MZM Optimizer - Clean comparison with amplitude and phase
+    MZM Frequency-Domain Analyzer using Bessel Expansion
+    Allows six independent betas (three per arm) and visualizes spectra.
     """
-    
-    def __init__(self, fm=1e9, duration_cycles=16):
-        """Initialize optimizer"""
+    def __init__(self, fm=1e9, max_order=6):
         self.fm = fm
         self.omega_m = 2 * np.pi * fm
-        
-        self.duration = duration_cycles / fm
-        self.fs = 64 * fm
-        self.num_samples = int(duration_cycles * self.fs / fm)
-        self.duration = self.num_samples / self.fs
-        self.t = np.linspace(0, self.duration, self.num_samples, endpoint=False)
-        
-        print(f"=== MZM Focused Sideband Optimizer ===")
-        print(f"Target: Enhance 0×fm, +1×fm, +2×fm, +3×fm")
-        print(f"Suppress: All other sidebands")
-        
-    def generate_modulated_signal(self, beta1, beta2, beta3, phi1, phi2, phi3):
-        """Generate modulated signal"""
-        max_order = 4
-        signal = np.zeros(len(self.t), dtype=complex)
-        
-        for n1 in range(-max_order, max_order + 1):
-            for n2 in range(-max_order, max_order + 1):
-                for n3 in range(-max_order, max_order + 1):
-                    freq_offset = n1 + 2*n2 + 3*n3
-                    
-                    if abs(freq_offset) <= 8:
-                        amplitude = jv(n1, beta1) * jv(n2, beta2) * jv(n3, beta3)
-                        
-                        if abs(amplitude) > 1e-6:
-                            phase = n1*phi1 + n2*phi2 + n3*phi3
-                            signal += amplitude * np.exp(1j * (freq_offset * self.omega_m * self.t + phase))
-        
-        return signal
-    
-    def mzm_output(self, params):
-        """Generate MZM output"""
-        beta1, beta2, beta3, phi1, phi2, phi3, delta_phi = params
-        
-        modulation = self.generate_modulated_signal(beta1, beta2, beta3, phi1, phi2, phi3)
-        
-        # MZM interference
-        upper_arm = 0.5 * modulation
-        lower_arm = 0.5 * modulation * np.exp(1j * delta_phi)
-        output = upper_arm + lower_arm
-        
-        return output
-    
-    def extract_frequency_components(self, signal):
-        """Extract amplitude and phase at each frequency"""
-        fft_signal = fft.fft(signal)
-        frequencies = fft.fftfreq(self.num_samples, 1/self.fs)
-        
-        components = {}
-        for order in range(-6, 7):  # Check -6 to +6 fm
-            target_freq = order * self.fm
-            freq_idx = np.argmin(np.abs(frequencies - target_freq))
-            
-            if abs(frequencies[freq_idx] - target_freq) < self.fm / 50:
-                complex_val = fft_signal[freq_idx]
-                amplitude = abs(complex_val)
-                phase = np.angle(complex_val) * 180 / np.pi  # Convert to degrees
-                
-                if amplitude > 1e-6:
-                    components[order] = {
-                        'amplitude': amplitude,
-                        'phase': phase,
-                        'complex': complex_val
-                    }
-        
-        return components
-    
-    def sideband_shaping_objective(self, params):
-        """Objective function for optimization"""
-        try:
-            output = self.mzm_output(params)
-            components = self.extract_frequency_components(output)
-            
-            # Target sidebands to enhance
-            target_sidebands = [0, 1, 2, 3]
-            target_power = sum(components.get(sb, {'amplitude': 0})['amplitude']**2 
-                             for sb in target_sidebands)
-            
-            # Unwanted sidebands to suppress
-            suppress_sidebands = [-6, -5, -4, -3, -2, -1, 4, 5, 6]
-            suppress_power = sum(components.get(sb, {'amplitude': 0})['amplitude']**2 
-                               for sb in suppress_sidebands)
-            
-            # Objective: minimize ratio of unwanted to wanted power
-            if target_power > 1e-12:
-                objective = suppress_power / target_power
-            else:
-                objective = 1e6
-            
-            return objective
-            
-        except:
-            return 1e6
-    
-    def optimize_sidebands(self, initial_params):
-        """Run optimization"""
-        print(f"\n=== Starting Optimization ===")
-        
-        # Parameter bounds [beta1, beta2, beta3, phi1, phi2, phi3, delta_phi]
-        bounds = [
-            (0.1, 3.0),      # beta1
-            (0.1, 3.0),      # beta2
-            (0.1, 3.0),      # beta3
-            (0, 2*np.pi),    # phi1
-            (0, 2*np.pi),    # phi2
-            (0, 2*np.pi),    # phi3
-            (0, 2*np.pi),    # delta_phi
-        ]
-        
-        # Run optimization
-        result = minimize(
-            self.sideband_shaping_objective,
-            initial_params,
-            method='L-BFGS-B',
-            bounds=bounds,
-            options={'maxiter': 500, 'disp': True}
-        )
-        
-        print(f"\n=== Optimization Results ===")
-        print(f"Success: {result.success}")
-        print(f"Final objective value: {result.fun:.6f}")
-        print(f"Iterations: {result.nit}")
-        
-        return result
-    
-    def bessel_expansion_coeffs(self, beta1, beta2, beta3, phi1, phi2, phi3, max_order=8):
-        coeffs = {}
-        for n1 in range(-max_order, max_order+1):
-            for n2 in range(-max_order, max_order+1):
-                for n3 in range(-max_order, max_order+1):
-                    freq_order = n1 + 2*n2 + 3*n3
-                    amp = jv(n1, beta1) * jv(n2, beta2) * jv(n3, beta3)
-                    if abs(amp) > 1e-10:
-                        phase = n1*phi1 + n2*phi2 + n3*phi3
-                        coeffs[freq_order] = coeffs.get(freq_order, 0) + amp * np.exp(1j*phase)
-        return coeffs
+        self.max_order = max_order
+        self.freq_orders = np.arange(-10, 11)  # -10 to +10
 
-    def get_arm_coeffs(self, betas, phis, delta_phi=0, max_order=8):
-        beta1, beta2, beta3 = betas
-        phi1, phi2, phi3 = phis
-        coeffs = self.bessel_expansion_coeffs(beta1, beta2, beta3, phi1, phi2, phi3, max_order)
-        if delta_phi != 0:
-            for k in coeffs:
-                coeffs[k] *= np.exp(1j*delta_phi)
-        return coeffs
+    def bessel_spectrum(self, betas, phis):
+        # betas, phis: arrays of length 3
+        spectrum = {}
+        for n1 in range(-self.max_order, self.max_order+1):
+            for n2 in range(-self.max_order, self.max_order+1):
+                for n3 in range(-self.max_order, self.max_order+1):
+                    order = n1 + 2*n2 + 3*n3
+                    if order in self.freq_orders:
+                        amp = jv(n1, betas[0]) * jv(n2, betas[1]) * jv(n3, betas[2])
+                        if abs(amp) > 1e-8:
+                            phase = n1*phis[0] + n2*phis[1] + n3*phis[2]
+                            val = amp * np.exp(1j*phase)
+                            if order in spectrum:
+                                spectrum[order] += val
+                            else:
+                                spectrum[order] = val
+        return spectrum
 
-    def get_combined_coeffs(self, upper, lower):
-        all_orders = set(upper.keys()) | set(lower.keys())
-        combined = {}
-        for o in all_orders:
-            u = upper.get(o, 0)
-            l = lower.get(o, 0)
-            c = u + l
-            combined[o] = c
-        return combined
+    def mzm_spectra(self, betas_upper, phis_upper, betas_lower, phis_lower, delta_phi):
+        # Calculate spectra for each arm and combined output
+        upper = self.bessel_spectrum(betas_upper, phis_upper)
+        lower = self.bessel_spectrum(betas_lower, phis_lower)
+        # Lower arm gets extra phase delta_phi
+        lower = {k: v * np.exp(1j*delta_phi) for k, v in lower.items()}
+        # Combined output
+        combined = {k: upper.get(k,0) + lower.get(k,0) for k in self.freq_orders}
+        return upper, lower, combined
 
-    def plot_all_spectra(self, betas, phis, delta_phi):
-        upper = self.get_arm_coeffs(betas, phis, 0)
-        lower = self.get_arm_coeffs(betas, phis, delta_phi)
-        combined = self.get_combined_coeffs(upper, lower)
-        orders = sorted(set(upper.keys()) | set(lower.keys()) | set(combined.keys()))
-        fig, axs = plt.subplots(3, 1, figsize=(14, 12), sharex=True)
-        # Upper arm
-        amps = [np.abs(upper.get(o, 0)) for o in orders]
-        phases = [np.angle(upper.get(o, 0), deg=True) for o in orders]
-        bars = axs[0].bar(orders, amps, color='red', alpha=0.7)
-        for o, a, p in zip(orders, amps, phases):
-            if a > max(amps)*0.01:
-                axs[0].text(o, a+max(amps)*0.02, f'{a:.2f}', ha='center', va='bottom', fontsize=10, fontweight='bold')
-                axs[0].text(o, -max(amps)*0.12, f'{int(round(p))}°', ha='center', va='top', fontsize=9, color='red', fontweight='bold')
-        axs[0].set_title('Upper Arm Spectrum', fontsize=14, fontweight='bold')
-        axs[0].set_ylabel('Amplitude')
-        axs[0].grid(True, alpha=0.3, axis='y')
-        axs[0].set_ylim(bottom=-max(amps)*0.2)
-        # Lower arm
-        amps = [np.abs(lower.get(o, 0)) for o in orders]
-        phases = [np.angle(lower.get(o, 0), deg=True) for o in orders]
-        bars = axs[1].bar(orders, amps, color='blue', alpha=0.7)
-        for o, a, p in zip(orders, amps, phases):
-            if a > max(amps)*0.01:
-                axs[1].text(o, a+max(amps)*0.02, f'{a:.2f}', ha='center', va='bottom', fontsize=10, fontweight='bold')
-                axs[1].text(o, -max(amps)*0.12, f'{int(round(p))}°', ha='center', va='top', fontsize=9, color='blue', fontweight='bold')
-        axs[1].set_title('Lower Arm Spectrum', fontsize=14, fontweight='bold')
-        axs[1].set_ylabel('Amplitude')
-        axs[1].grid(True, alpha=0.3, axis='y')
-        axs[1].set_ylim(bottom=-max(amps)*0.2)
-        # Combined
-        amps = [np.abs(combined.get(o, 0)) for o in orders]
-        phases = [np.angle(combined.get(o, 0), deg=True) for o in orders]
-        bars = axs[2].bar(orders, amps, color='black', alpha=0.8)
-        for o, a, p in zip(orders, amps, phases):
-            if a > max(amps)*0.01:
-                axs[2].text(o, a+max(amps)*0.02, f'{a:.2f}', ha='center', va='bottom', fontsize=10, fontweight='bold')
-                axs[2].text(o, -max(amps)*0.12, f'{int(round(p))}°', ha='center', va='top', fontsize=9, color='black', fontweight='bold')
-        axs[2].set_title('Combined Output Spectrum', fontsize=14, fontweight='bold')
-        axs[2].set_xlabel('Frequency Order (×fm)')
-        axs[2].set_ylabel('Amplitude')
-        axs[2].grid(True, alpha=0.3, axis='y')
-        axs[2].set_ylim(bottom=-max(amps)*0.2)
-        plt.tight_layout()
-        plt.show()
-    
-    def plot_spectrum_bars(self, ax, powers, title, color):
-        """Plot spectrum as clean bars with amplitude and phase"""
-        if not powers:
-            ax.text(0.5, 0.5, 'No components', ha='center', va='center', transform=ax.transAxes)
-            ax.set_title(title, fontweight='bold')
-            return
-        
-        orders = sorted(powers.keys())
-        amplitudes = [powers[order]['amplitude'] for order in orders]  # Use amplitude from dict
-        
-        # Create bars
-        x_pos = np.arange(len(orders))
-        bars = ax.bar(x_pos, amplitudes, alpha=0.8, color=color, 
-                     edgecolor='black', linewidth=1)
-        
-        # Highlight target sidebands
-        target_sidebands = [0, 1, 2, 3]
-        for i, order in enumerate(orders):
-            if order in target_sidebands:
-                bars[i].set_color('red')
-                bars[i].set_alpha(0.9)
-                bars[i].set_linewidth(2)
-        
-        # Add amplitude labels
-        max_amplitude = max(amplitudes) if amplitudes else 1
-        for i, (order, amp) in enumerate(zip(orders, amplitudes)):
-            if amp > max_amplitude * 0.02:
-                ax.text(i, amp + max_amplitude*0.02, f'{amp:.1f}', 
-                       ha='center', va='bottom', fontsize=9, fontweight='bold')
-        
-        # Formatting
-        ax.set_title(title, fontsize=14, fontweight='bold')
-        ax.set_xlabel('Frequency Components', fontsize=12)
-        ax.set_ylabel('Amplitude', fontsize=12)
-        ax.set_xticks(x_pos)
-        ax.set_xticklabels([f'{order:+d}×fm' for order in orders])
-        ax.grid(True, alpha=0.3, axis='y')
-        
-        # Add legend for colors
-        from matplotlib.patches import Patch
-        legend_elements = [Patch(facecolor='red', alpha=0.9, label='Target (0,1,2,3)'),
-                          Patch(facecolor=color, alpha=0.8, label='Others')]
-        ax.legend(handles=legend_elements, loc='upper right')
-    
-    def plot_comparison_spectrum(self, ax, powers_orig, powers_opt):
-        """Plot side-by-side comparison"""
-        all_orders = sorted(set(powers_orig.keys()) | set(powers_opt.keys()))
-        
-        x_pos = np.arange(len(all_orders))
-        width = 0.35
-        
-        # Extract amplitudes
-        amps_orig = [powers_orig.get(order, 0)['amplitude'] for order in all_orders]
-        amps_opt = [powers_opt.get(order, 0)['amplitude'] for order in all_orders]
-        
-        # Plot bars
-        bars1 = ax.bar(x_pos - width/2, amps_orig, width, 
-                      label='Original', alpha=0.8, color='blue', edgecolor='black')
-        bars2 = ax.bar(x_pos + width/2, amps_opt, width,
-                      label='Optimized', alpha=0.8, color='green', edgecolor='black')
-        
-        # Highlight target sidebands
-        target_sidebands = [0, 1, 2, 3]
-        for i, order in enumerate(all_orders):
-            if order in target_sidebands:
-                bars1[i].set_color('lightblue')
-                bars2[i].set_color('lightgreen')
-                bars1[i].set_linewidth(2)
-                bars2[i].set_linewidth(2)
-        
-        ax.set_title('Direct Comparison: Original vs Optimized', fontsize=14, fontweight='bold')
-        ax.set_xlabel('Frequency Components', fontsize=12)
-        ax.set_ylabel('Amplitude', fontsize=12)
-        ax.set_xticks(x_pos)
-        ax.set_xticklabels([f'{order:+d}' for order in all_orders])
-        ax.legend()
-        ax.grid(True, alpha=0.3, axis='y')
-        ax.set_yscale('log')
-    
-    def plot_suppression_analysis(self, ax, powers_orig, powers_opt):
-        """Analyze suppression performance"""
-        target_sidebands = [0, 1, 2, 3]
-        suppress_sidebands = [-5, -4, -3, -2, -1, 4, 5, 6, 7, 8]
-        
-        # Calculate metrics
-        target_power_orig = sum((powers_orig[sb]['amplitude'] if sb in powers_orig else 0)**2 for sb in target_sidebands)
-        suppress_power_orig = sum((powers_orig[sb]['amplitude'] if sb in powers_orig else 0)**2 for sb in suppress_sidebands)
-        
-        target_power_opt = sum((powers_opt[sb]['amplitude'] if sb in powers_opt else 0)**2 for sb in target_sidebands)
-        suppress_power_opt = sum((powers_opt[sb]['amplitude'] if sb in powers_opt else 0)**2 for sb in suppress_sidebands)
-        
-        # Suppression ratios
-        ratio_orig = 10 * np.log10((target_power_orig + 1e-12) / (suppress_power_orig + 1e-12))
-        ratio_opt = 10 * np.log10((target_power_opt + 1e-12) / (suppress_power_opt + 1e-12))
-        
-        # Bar chart of metrics
-        metrics = ['Target Power\n(dB)', 'Suppress Power\n(dB)', 'Suppression Ratio\n(dB)']
-        orig_values = [10*np.log10(target_power_orig + 1e-12), 
-                      10*np.log10(suppress_power_orig + 1e-12), 
-                      ratio_orig]
-        opt_values = [10*np.log10(target_power_opt + 1e-12), 
-                     10*np.log10(suppress_power_opt + 1e-12), 
-                     ratio_opt]
-        
-        x_pos = np.arange(len(metrics))
-        width = 0.35
-        
-        bars1 = ax.bar(x_pos - width/2, orig_values, width, 
-                      label='Original', alpha=0.8, color='blue')
-        bars2 = ax.bar(x_pos + width/2, opt_values, width,
-                      label='Optimized', alpha=0.8, color='green')
-        
-        # Add value labels
-        for i, (orig, opt) in enumerate(zip(orig_values, opt_values)):
-            ax.text(i - width/2, orig + 1, f'{orig:.1f}', 
-                   ha='center', va='bottom', fontsize=9, fontweight='bold')
-            ax.text(i + width/2, opt + 1, f'{opt:.1f}', 
-                   ha='center', va='bottom', fontsize=9, fontweight='bold')
-        
-        ax.set_title('Suppression Performance Analysis', fontsize=14, fontweight='bold')
-        ax.set_ylabel('Power (dB)', fontsize=12)
-        ax.set_xticks(x_pos)
-        ax.set_xticklabels(metrics)
-        ax.legend()
-        ax.grid(True, alpha=0.3, axis='y')
-    
-    def print_numerical_comparison(self, powers_orig, powers_opt):
-        """Print detailed numerical comparison"""
-        print(f"\n=== Detailed Numerical Comparison ===")
-        
-        target_sidebands = [0, 1, 2, 3]
-        
-        print(f"Target Sidebands (0, 1, 2, 3 fm):")
-        print(f"{'Sideband':<10} {'Original':<12} {'Optimized':<12} {'Change':<12}")
-        print(f"{'-'*50}")
-        
-        for sb in target_sidebands:
-            orig_amp = powers_orig[sb]['amplitude'] if sb in powers_orig else 0
-            opt_amp = powers_opt[sb]['amplitude'] if sb in powers_opt else 0
-            change = opt_amp / (orig_amp + 1e-12)
-            
-            print(f"{sb:+2d}×fm      {orig_amp:8.1f}     {opt_amp:8.1f}     {change:8.2f}x")
-        
-        print(f"\nUnwanted Sidebands:")
-        suppress_sidebands = [-3, -2, -1, 4, 5]
-        for sb in suppress_sidebands:
-            if sb in powers_orig or sb in powers_opt:
-                orig_amp = powers_orig[sb]['amplitude'] if sb in powers_orig else 0
-                opt_amp = powers_opt[sb]['amplitude'] if sb in powers_opt else 0
-                suppression_db = 20 * np.log10((orig_amp + 1e-12) / (opt_amp + 1e-12))
-                
-                print(f"{sb:+2d}×fm      {orig_amp:8.1f}     {opt_amp:8.1f}     {suppression_db:6.1f} dB supp.")
+    def get_amplitudes(self, combined):
+        # Returns a dict of {order: amplitude}
+        return {k: np.abs(v) for k, v in combined.items()}
 
-# Demonstration
 if __name__ == "__main__":
-    print("=== PHYSICS-CORRECT MZM SPECTRUM DEMO ===\n")
-    optimizer = MZMFocusedOptimizer(fm=1e9, duration_cycles=16)
-    betas = [1.0, 0.7, 0.4]
-    phis = [0, np.pi/4, np.pi/2]
-    delta_phi = np.pi/6
-    print(f"β: {betas}")
-    print(f"φ: {phis}")
-    print(f"Δφ: {delta_phi}")
-    optimizer.plot_all_spectra(betas, phis, delta_phi)
+    np.random.seed(42)
+    analyzer = MZMBesselAnalyzer(fm=1e9, max_order=6)
+    alpha = 2  # penalty weight for -1, -2, -3
+    beta = 1   # penalty weight for other unwanted sidebands
+    results = []
+    for i in range(20):
+        betas_upper = np.random.uniform(0.2, 1.5, 3)
+        phis_upper = np.random.uniform(0, 2*np.pi, 3)
+        betas_lower = np.random.uniform(0.2, 1.5, 3)
+        phis_lower = np.random.uniform(0, 2*np.pi, 3)
+        delta_phi = np.random.uniform(0, 2*np.pi)
+        _, _, combined = analyzer.mzm_spectra(
+            betas_upper, phis_upper, betas_lower, phis_lower, delta_phi)
+        amps = analyzer.get_amplitudes(combined)
+        carrier = amps.get(0, 0)
+        plus1 = amps.get(1, 0)
+        plus2 = amps.get(2, 0)
+        plus3 = amps.get(3, 0)
+        minus1 = amps.get(-1, 0)
+        minus2 = amps.get(-2, 0)
+        minus3 = amps.get(-3, 0)
+        # Unwanted: all sidebands except 0, +1, +2, +3, -1, -2, -3
+        other_unwanted = [amps.get(k, 0) for k in amps if k not in [0, 1, 2, 3, -1, -2, -3]]
+        sum_other_unwanted = sum(other_unwanted)
+        sum_minus = minus1 + minus2 + minus3
+        score = (plus1 + plus2 + plus3) - alpha * sum_minus - beta * sum_other_unwanted
+        results.append({
+            'index': i+1,
+            'betas_upper': betas_upper,
+            'phis_upper': phis_upper,
+            'betas_lower': betas_lower,
+            'phis_lower': phis_lower,
+            'delta_phi': delta_phi,
+            'carrier': carrier,
+            '+1': plus1,
+            '+2': plus2,
+            '+3': plus3,
+            '-1': minus1,
+            '-2': minus2,
+            '-3': minus3,
+            'sum_minus': sum_minus,
+            'sum_other_unwanted': sum_other_unwanted,
+            'score': score
+        })
+    print("\nResults for 20 Random Parameter Sets:")
+    for r in results:
+        print(f"Set {r['index']}:")
+        print(f"  betas_upper: {r['betas_upper']}")
+        print(f"  phis_upper: {r['phis_upper']}")
+        print(f"  betas_lower: {r['betas_lower']}")
+        print(f"  phis_lower: {r['phis_lower']}")
+        print(f"  delta_phi: {r['delta_phi']:.3f}")
+        print(f"  Carrier: {r['carrier']:.3f}")
+        print(f"  +1: {r['+1']:.3f}")
+        print(f"  +2: {r['+2']:.3f}")
+        print(f"  +3: {r['+3']:.3f}")
+        print(f"  -1: {r['-1']:.3f}")
+        print(f"  -2: {r['-2']:.3f}")
+        print(f"  -3: {r['-3']:.3f}")
+        print(f"  Sum of -1,-2,-3: {r['sum_minus']:.3f}")
+        print(f"  Sum of other unwanted sidebands: {r['sum_other_unwanted']:.3f}")
+        print(f"  Score: {r['score']:.3f}\n")
+    # Find the best set (highest score)
+    best = max(results, key=lambda r: r['score'])
+    print(f"Best set is Set {best['index']} (score = {best['score']:.3f})")
+    print(f"  betas_upper: {best['betas_upper']}")
+    print(f"  phis_upper: {best['phis_upper']}")
+    print(f"  betas_lower: {best['betas_lower']}")
+    print(f"  phis_lower: {best['phis_lower']}")
+    print(f"  delta_phi: {best['delta_phi']:.3f}")
+    print(f"  Carrier: {best['carrier']:.3f}")
+    print(f"  +1: {best['+1']:.3f}")
+    print(f"  +2: {best['+2']:.3f}")
+    print(f"  +3: {best['+3']:.3f}")
+    print(f"  -1: {best['-1']:.3f}")
+    print(f"  -2: {best['-2']:.3f}")
+    print(f"  -3: {best['-3']:.3f}")
+    print(f"  Sum of -1,-2,-3: {best['sum_minus']:.3f}")
+    print(f"  Sum of other unwanted sidebands: {best['sum_other_unwanted']:.3f}")
+    print(f"  Score: {best['score']:.3f}")
+
+# === PHASE-ONLY OPTIMIZER WITH FIXED BETAS ===
+from scipy.optimize import minimize
+
+# User's fixed betas (from your best manual set)
+betas_upper_fixed = np.array([0.5911418, 0.57029264, 0.43456265])
+betas_lower_fixed = np.array([0.45, 1.1, 0])
+
+# Initial guess: your best manual phases
+phis_upper_init = np.array([2.35619449, 3.4906585, 0.32345053])
+phis_lower_init = np.array([0.91040133, 3.07532239, 2.35619449])
+delta_phi_init = 2.69056597
+
+# Cost function: maximize +1, +2, +3, suppress all others
+lambda_penalty = 4.0
+
+# --- Modified cost function: maximize the minimum of +1, +2, +3, and penalize if they differ by more than epsilon ---
+epsilon = 0.03  # allowed difference between +1, +2, +3 amplitudes
+mu = 300         # penalty weight for mismatch
+
+# Cost function explanation:
+#   - Maximizes the minimum of the +1, +2, +3 sideband amplitudes
+#   - Adds a penalty if any pair differs by more than epsilon
+#   - Still penalizes unwanted sidebands as before
+
+def phase_cost(phases):
+    phis_upper = phases[:3]
+    phis_lower = phases[3:6]
+    delta_phi = phases[6]
+    _, _, combined = analyzer.mzm_spectra(
+        betas_upper_fixed, phis_upper, betas_lower_fixed, phis_lower, delta_phi)
+    amps = analyzer.get_amplitudes(combined)
+    a1, a2, a3 = amps.get(1, 0), amps.get(2, 0), amps.get(3, 0)
+    unwanted = sum(amps.get(k, 0) for k in amps if k not in [1, 2, 3])
+    # Penalty for mismatch
+    penalty = (
+        max(0, abs(a1 - a2) - epsilon) +
+        max(0, abs(a1 - a3) - epsilon) +
+        max(0, abs(a2 - a3) - epsilon)
+    )
+    return -min(a1, a2, a3) + lambda_penalty * unwanted + mu * penalty
+
+# Bounds: all phases in [0, 2pi]
+bounds = [(0, 2*np.pi)]*7
+
+# Initial vector
+x0 = np.concatenate([phis_upper_init, phis_lower_init, [delta_phi_init]])
+
+print("\n=== Phase-Only Optimization (Fixed Betas) ===")
+result = minimize(phase_cost, x0, bounds=bounds, method='L-BFGS-B', options={'maxiter': 300, 'disp': True})
+opt_phases = result.x
+phis_upper_opt = opt_phases[:3]
+phis_lower_opt = opt_phases[3:6]
+delta_phi_opt = opt_phases[6]
+
+print("\nOptimal phases found:")
+print(f"  phis_upper: {[f'{p:.4f}' for p in phis_upper_opt]}")
+print(f"  phis_lower: {[f'{p:.4f}' for p in phis_lower_opt]}")
+print(f"  delta_phi: {delta_phi_opt:.4f}")
+
+# Show resulting spectrum
+upper, lower, combined = analyzer.mzm_spectra(
+    betas_upper_fixed, phis_upper_opt, betas_lower_fixed, phis_lower_opt, delta_phi_opt)
+
+# Plot only the combined output spectrum
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots(figsize=(12, 4))
+orders = analyzer.freq_orders
+amps = [np.abs(combined.get(k, 0)) for k in orders]
+phases = [np.angle(combined.get(k, 0), deg=True) for k in orders]
+bars = ax.bar(orders, amps, color='skyblue', edgecolor='k', width=0.7)
+for i, (bar, phase, amp) in enumerate(zip(bars, phases, amps)):
+    if amp > max(amps)*0.02:
+        ax.text(bar.get_x() + bar.get_width()/2., amp + max(amps)*0.02,
+                f'{amp:.3f}', ha='center', va='bottom', fontsize=10, fontweight='bold')
+        ax.text(bar.get_x() + bar.get_width()/2., -max(amps)*0.08,
+                f'{phase:.0f}°', ha='center', va='top', fontsize=10, color='purple', fontweight='bold')
+ax.set_title('Combined Output Spectrum (Optimized Phases)', fontsize=14, fontweight='bold')
+ax.set_xlabel('Sideband Order (n)')
+ax.set_ylabel('Amplitude')
+ax.set_xticks(orders)
+ax.set_xlim(-10, 10)
+ax.grid(True, alpha=0.3, axis='y')
+ax.set_ylim(bottom=-max(amps)*0.15)
+plt.tight_layout()
+plt.show()
+
+# === BETAS AND PHASES OPTIMIZER ===
+from scipy.optimize import minimize
+
+# Bounds for betas (chosen based on previous random search)
+beta_bounds = [(0.2, 1.5)]*3 + [(0.2, 1.5)]*3  # 3 for upper, 3 for lower
+# Bounds for phases (all in [0, 2pi])
+phase_bounds = [(0, 2*np.pi)]*3 + [(0, 2*np.pi)]*3 + [(0, 2*np.pi)]  # 3 upper, 3 lower, delta_phi
+# Full bounds: betas_upper, betas_lower, phis_upper, phis_lower, delta_phi
+full_bounds = beta_bounds + phase_bounds
+
+# Initial guess: concatenate previous best betas and phases
+x0_betas = np.concatenate([betas_upper_fixed, betas_lower_fixed])
+x0_phases = np.concatenate([phis_upper_init, phis_lower_init, [delta_phi_init]])
+x0_full = np.concatenate([x0_betas, x0_phases])
+
+def beta_phase_cost(x):
+    betas_upper = x[:3]
+    betas_lower = x[3:6]
+    phis_upper = x[6:9]
+    phis_lower = x[9:12]
+    delta_phi = x[12]
+    _, _, combined = analyzer.mzm_spectra(
+        betas_upper, phis_upper, betas_lower, phis_lower, delta_phi)
+    amps = analyzer.get_amplitudes(combined)
+    a1, a2, a3 = amps.get(1, 0), amps.get(2, 0), amps.get(3, 0)
+    unwanted = sum(amps.get(k, 0) for k in amps if k not in [1, 2, 3])
+    # Penalty for mismatch
+    penalty = (
+        max(0, abs(a1 - a2) - epsilon) +
+        max(0, abs(a1 - a3) - epsilon) +
+        max(0, abs(a2 - a3) - epsilon)
+    )
+    return -min(a1, a2, a3) + lambda_penalty * unwanted + mu * penalty
+
+print("\n=== Betas and Phases Optimization ===")
+result_full = minimize(beta_phase_cost, x0_full, bounds=full_bounds, method='L-BFGS-B', options={'maxiter': 400, 'disp': True})
+opt = result_full.x
+betas_upper_opt = opt[:3]
+betas_lower_opt = opt[3:6]
+phis_upper_opt = opt[6:9]
+phis_lower_opt = opt[9:12]
+delta_phi_opt = opt[12]
+
+print("\nOptimal betas and phases found:")
+print(f"  betas_upper: {[f'{b:.4f}' for b in betas_upper_opt]}")
+print(f"  betas_lower: {[f'{b:.4f}' for b in betas_lower_opt]}")
+print(f"  phis_upper: {[f'{p:.4f}' for p in phis_upper_opt]}")
+print(f"  phis_lower: {[f'{p:.4f}' for p in phis_lower_opt]}")
+print(f"  delta_phi: {delta_phi_opt:.4f}")
+
+# Show resulting spectrum
+upper, lower, combined = analyzer.mzm_spectra(
+    betas_upper_opt, phis_upper_opt, betas_lower_opt, phis_lower_opt, delta_phi_opt)
+
+# Plot only the combined output spectrum
+fig, ax = plt.subplots(figsize=(12, 4))
+orders = analyzer.freq_orders
+amps = [np.abs(combined.get(k, 0)) for k in orders]
+phases = [np.angle(combined.get(k, 0), deg=True) for k in orders]
+bars = ax.bar(orders, amps, color='lightgreen', edgecolor='k', width=0.7)
+for i, (bar, phase, amp) in enumerate(zip(bars, phases, amps)):
+    if amp > max(amps)*0.02:
+        ax.text(bar.get_x() + bar.get_width()/2., amp + max(amps)*0.02,
+                f'{amp:.3f}', ha='center', va='bottom', fontsize=10, fontweight='bold')
+        ax.text(bar.get_x() + bar.get_width()/2., -max(amps)*0.08,
+                f'{phase:.0f}°', ha='center', va='top', fontsize=10, color='purple', fontweight='bold')
+ax.set_title('Combined Output Spectrum (Optimized Betas & Phases)', fontsize=14, fontweight='bold')
+ax.set_xlabel('Sideband Order (n)')
+ax.set_ylabel('Amplitude')
+ax.set_xticks(orders)
+ax.set_xlim(-10, 10)
+ax.grid(True, alpha=0.3, axis='y')
+ax.set_ylim(bottom=-max(amps)*0.15)
+plt.tight_layout()
+plt.show()
